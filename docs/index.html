@@ -28,8 +28,9 @@ button.addEventListener('click', async () => {
     const response = await fetch(WEBMAP_JSON_URL);
     const data = await response.json();
 
-    // Find the layer that has the Burn_Ban1 field
-    const burnLayer = data.layers.find(layer => 
+    // Safely handle layers array
+    const layersArray = data.layers || data.operationalLayers || [];
+    const burnLayer = layersArray.find(layer => 
       layer.popupInfo?.fieldInfos?.some(f => f.fieldName === 'Burn_Ban1')
     );
 
