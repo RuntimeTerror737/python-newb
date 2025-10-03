@@ -28,7 +28,7 @@ button.addEventListener('click', async () => {
     const response = await fetch(WEBMAP_JSON_URL);
     const data = await response.json();
 
-    // Look for the layer with Burn_Ban1 field
+    // Find the layer that has the Burn_Ban1 field
     const burnLayer = data.layers.find(layer => 
       layer.popupInfo?.fieldInfos?.some(f => f.fieldName === 'Burn_Ban1')
     );
@@ -38,7 +38,7 @@ button.addEventListener('click', async () => {
       return;
     }
 
-    // FeatureCollection may be nested in layerDefinition.featureSet.features
+    // Extract features (if they exist in the featureCollection)
     const features = burnLayer.featureCollection?.layers?.[0]?.featureSet?.features || [];
 
     const activeParishes = features
@@ -51,6 +51,7 @@ button.addEventListener('click', async () => {
       return;
     }
 
+    // Display the active parishes
     resultsList.innerHTML = '';
     activeParishes.forEach(parish => {
       const li = document.createElement('li');
