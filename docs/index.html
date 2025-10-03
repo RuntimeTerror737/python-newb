@@ -1,1 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Louisiana Burn Ban Checker</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding: 20px; max-width:800px; margin:auto; }
+    h1{ margin:0 0 12px 0; font-size:20px }
+    #controls{ margin:12px 0 18px 0; display:flex; gap:12px; align-items:center; flex-wrap:wrap }
+    button{ padding:10px 14px; font-size:15px; cursor:pointer; border-radius:6px; border:1px solid #bbb; background:#f7f7f7 }
+    #status{ color:#222; margin-left:6px; font-size:14px }
+    #results{ margin-top:16px; padding-left:18px }
+    li{ margin:6px 0; }
+    .hint{ color:#555; font-size:13px; margin-top:8px }
+    .small{ font-size:13px; color:#666 }
+  </style>
+</head>
+<body>
+  <h1>Louisiana Burn Ban Checker</h1>
+  <div id="controls">
+    <button id="checkBtn">Check Active Bans</button>
+    <div id="status" class="small">Ready.</div>
+  </div>
 
+  <div class="hint">This page attempts a JSONP query to the official ArcGIS layer and falls back to public CORS proxies if needed. Click the button to fetch current parishes showing a "Burn Ban".</div>
+
+  <ul id="results" aria-live="polite"></ul>
+
+<script>
+/*
+  Behavior:
+  1) Try JSONP (adds a <script> tag with callback). JSONP avoids browser CORS.
+  2) If JSONP fails (timeout or load error), try CORS proxy fallbacks (corsproxy.io, allorigins).
+  Notes:
+  - The page queries the Burn_Ban1 layer for features where Burn_Ban1 = 'Burn Ban'
+  - It displays Parish1 attribute values for the matching features.
+*/
+
+const checkBtn = document.getElementById('checkBtn');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+
+const LAYER_ENDPOINT = "https://louisiana.maps.arcgis.com/arcgis/rest/services/BurnBan/FeatureServer/Burn_Ban1/query";
+const WHERE_CLAUSE = "Burn_Ban1='Burn Ban'"; // as specified by the map properties
+const OUT_FIELDS = "Parish1,Burn_Ban1";
+const JSONP_CALLBACK_NAME = "arcgisBurnBanJSONPCallback";
+
+let jsonpScript = null;
+let fallbackTimer = null;
+let responded = false;
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+function clearResults() {
+  resultsEl.innerHTML = "";
+}
+function showError(msg) {
+  clearResults();
+  const li = document.createElement('li');
+  li.textContent = msg;
+  resultsEl.appendChild(li);
+}
+
+// Build JSONP URL
+function jsonpUrl() {
+  const p = new URLSearchParams({
+    where: WHERE_CLAUSE,
+    outFields: OUT_FIELDS,
+    f: "json",
+    callback: JSONP_CALLBACK_NAME
+  });
+  return LAYER_ENDPOINT + "?" + p.toString();
+}
+
+// JSONP callback (global)
+window[JSONP_CALLBACK_NAME] = function(data) {
+  responded = true;
+  clearTimeout(fallbackTimer);
+  try {
+    if (!data) {
+      setStatus("No data returned (JSONP).");
+      showError("No data returned.");
+      return;
+    }
+    if (data.error) {
+      setStatus("ArcGIS returned an error.");
+      showError("ArcGIS error: " + (data.error.message || JSON.stringify(data.error)));
+      return;
+    }
+    const features = Array.isArray(data.features) ? data.features : [];
+    renderFeatures(features);
+  } catch (e) {
+    setStatus("Processing error.");
+    showError("Processing error. See console.");
+    console.error(e);
+  }
+};
+
+function renderFeatures(features) {
+  clearResults();
+  if (!features.length) {
+    setStatus("No active burn bans found.");
+    resultsEl.innerHTML = "<li>No active burn bans found.</li>";
+    return;
+  }
+  setStatus(features.length + " active burn ban(s) found.");
+  features.forEach(f => {
+    const name = f && f.attributes && f.attributes.Parish1 ? f.attributes.Parish1 : "(unknown)";
+    const li = document.createElement('li');
+    li.textContent = name;
+    resultsEl.appendChild(li);
+  });
+}
+
+// CORS proxy fallback attempts
+async function tryCorsProxies() {
+  const original = LAYER_ENDPOINT + "?where=" + encodeURIComponent(WHERE_CLAUSE)
+                 + "&outFields=" + encodeURIComponent(OUT_FIELDS) + "&f=json";
+  const proxies = [
+    "https://corsproxy.io/?" + original,
+    "https://api.allorigins.win/raw?url=" + encodeURIComponent(original)
+  ];
+
+  for (const url of proxies) {
+    try {
+      setStatus("Trying proxy: " + new URL(url).hostname);
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const json = await resp.json();
+      if (json && json.error) {
+        setStatus("ArcGIS error via proxy.");
+        showError("ArcGIS error: " + (json.error.message || JSON.stringify(json.error)));
+        return;
+      }
+      renderFeatures(json.features || []);
+      return; // success
+    } catch (err) {
+      console.warn("Proxy failed:", url, err);
+      // try next proxy
+    }
+  }
+  setStatus("All attempts failed (JSONP + proxies). Check console for details.");
+  showError("Unable to fetch data from ArcGIS. See browser console.");
+}
+
+function startJSONPRequest() {
+  responded = false;
+  // cleanup previous
+  if (jsonpScript) {
+    jsonpScript.remove();
+    jsonpScript = null;
+  }
+  // create script
+  const src = jsonpUrl();
+  jsonpScript = document.createElement('script');
+  jsonpScript.src = src;
+  jsonpScript.async = true;
+  jsonpScript.onerror = function() {
+    if (!responded) {
+      setStatus("JSONP load failed — trying proxy fallback...");
+      tryCorsProxies();
+    }
+  };
+  document.body.appendChild(jsonpScript);
+
+  // fallback timer: if no JSONP response in 8s, try proxies
+  fallbackTimer = setTimeout(() => {
+    if (!responded) {
+      setStatus("No JSONP response — trying proxy fallback...");
+      tryCorsProxies();
+    }
+  }, 8000);
+}
+
+// Button click handler
+checkBtn.addEventListener('click', () => {
+  clearResults();
+  setStatus("Loading (attempting JSONP)...");
+  startJSONPRequest();
+});
+</script>
+</body>
+</html>
